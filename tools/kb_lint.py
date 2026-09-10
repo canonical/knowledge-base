@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Check knowledge-base structure with the Python standard library.
+
+Exit codes: 0 = clean, 1 = findings, 2 = tool error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TypedDict
+
+HANDSHAKE = "Read the top-level `.kb/agents.md` file before continuing below."
+HANDSHAKE_ROOT = "Read the top-level `.kb/agents.md` before continuing below."
+KB_HEADERS = frozenset(
+    {"Preface", "Overview", "Important", "Architecture", "Documents"}
+)
+AGENTS_HEADERS = KB_HEADERS | {"Directory"}
+IGNORED_DIRECTORIES = frozenset(
+    {".git", "node_modules", ".venv", "__pycache__", "vendor"}
+)
+HEADING = re.compile(r"^ {0,3}#(?:[ \t]+(.*)|[ \t]*)$")
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+LIST_MARKER = re.compile(r"^(?:[-+*]|[0-9]+[.)])(?:[ \t]|$)")
+LIST_ENTRY = re.compile(r"^- `[^`]+` - \S.*$")
+
+
+class Finding(TypedDict):
+    file: str
+    check: str
+    message: str
+
+
+def content_lines(text: str) -> Iterator[tuple[int, str]]:
+    """Yield numbered lines outside fenced code blocks."""
+    fence_marker = ""
+    for number, line in enumerate(text.splitlines(), 1):
+        match = FENCE.match(line)
+        if match:
+            marker, suffix = match.groups()
+            if fence_marker:
+                if (
+                    marker[0] == fence_marker[0]
+                    and len(marker) >= len(fence_marker)
+                    and not suffix.strip()
+                ):
+                    fence_marker = ""
+                continue
+            if marker[0] == "~" or "`" not in suffix:
+                fence_marker = marker
+                continue
+        if not fence_marker:
+            yield number, line
+
+
+def heading_name(line: str) -> str | None:
+    match = HEADING.fullmatch(line)
+    if match is None:
+        return None
+    name = (match.group(1) or "").strip()
+    return re.sub(r"(?:^|[ \t]+)#+$", "", name).rstrip()
+
+
+@dataclass(frozen=True)
+class Document:
+    path: Path
+    text: str
+    lines: tuple[tuple[int, str], ...]
+
+    @property
+    def is_agents(self) -> bool:
+        return self.path.name == "AGENTS.md"
+
+
+class Lint:
+    def __init__(self, root: Path) -> None:
+        self.root = Path(os.path.abspath(root))
+        self.findings: list[Finding] = []
+        self.documents: list[Document] = []
+
+    def flag(self, path: Path, check: str, message: str) -> None:
+        relative_path = path.relative_to(self.root) if path.is_absolute() else path
+        self.findings.append(
+            {"file": relative_path.as_posix(), "check": check, "message": message}
+        )
+
+    def traversal_error(self, error: OSError) -> None:
+        path = Path(error.filename) if error.filename else self.root
+        self.flag(path, "tool-error", f"cannot scan directory: {error.strerror}")
+
+    def discover(self) -> None:
+        paths: list[Path] = []
+        for directory, subdirectories, filenames in os.walk(
+            self.root, onerror=self.traversal_error, followlinks=False
+        ):
+            subdirectories[:] = sorted(
+                name for name in subdirectories if name not in IGNORED_DIRECTORIES
+            )
+            parent = Path(directory)
+            for name in filenames:
+                if name == "AGENTS.md" or (
+                    parent.name == ".kb" and name.endswith(".md")
+                ):
+                    paths.append(parent / name)
+
+        for path in sorted(paths):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as error:
+                self.flag(path, "tool-error", f"cannot read UTF-8 document: {error}")
+                continue
+            self.documents.append(Document(path, text, tuple(content_lines(text))))
+
+    def check_shape(self, document: Document) -> None:
+        first_line = next(
+            (line for line in document.text.splitlines() if line.strip()), ""
+        )
+        if first_line != "# Preface":
+            message = "first non-blank line must be '# Preface'"
+            if not first_line:
+                message = "file is empty"
+            self.flag(document.path, "preface-first", message)
+
+        allowed_headers = KB_HEADERS
+        if document.is_agents:
+            allowed_headers = AGENTS_HEADERS
+        elif document.path == self.root / ".kb/agents.md":
+            allowed_headers = KB_HEADERS | {"Headers"}
+
+        documents_seen = False
+        preface_lines: list[str] = []
+        section = None
+        for number, line in document.lines:
+            heading = heading_name(line)
+            if heading is not None:
+                if document.is_agents and documents_seen:
+                    self.flag(
+                        document.path,
+                        "documents-last",
+                        f"heading on line {number} follows '# Documents'; Documents must be last",
+                    )
+                if heading not in allowed_headers:
+                    self.flag(
+                        document.path,
+                        "allowed-headers",
+                        f"header '{heading}' on line {number} is not registered; "
+                        f"use {', '.join(sorted(allowed_headers))}",
+                    )
+                documents_seen = documents_seen or heading == "Documents"
+                section = heading
+            elif section == "Preface" and line.strip():
+                preface_lines.append(line.strip())
+
+        if not document.is_agents:
+            handshakes = {HANDSHAKE}
+            if document.path == self.root / ".kb/agents.md":
+                handshakes.add(HANDSHAKE_ROOT)
+            if not preface_lines or preface_lines[-1] not in handshakes:
+                self.flag(
+                    document.path,
+                    "handshake-line",
+                    f'last line of the Preface must be "{HANDSHAKE}"',
+                )
+
+    def check_listings(self, document: Document) -> None:
+        if not document.is_agents:
+            return
+        section = None
+        for number, line in document.lines:
+            heading = heading_name(line)
+            if heading is not None:
+                section = heading
+                continue
+            if section not in {"Directory", "Documents"} or not LIST_MARKER.match(line):
+                continue
+            if not LIST_ENTRY.fullmatch(line):
+                self.flag(
+                    document.path,
+                    "listing-format",
+                    f"{section} item on line {number} must read '- `name` - Brief description.'",
+                )
+
+    def run(self) -> int:
+        self.findings.clear()
+        self.documents.clear()
+        try:
+            valid_root = self.root.is_dir()
+        except OSError as error:
+            self.flag(self.root, "tool-error", f"cannot inspect root: {error}")
+            return 2
+        if not valid_root:
+            return 2
+        self.discover()
+        for document in self.documents:
+            self.check_shape(document)
+            self.check_listings(document)
+        if any(finding["check"] == "tool-error" for finding in self.findings):
+            return 2
+        if not self.documents:
+            return 2
+        return 1 if self.findings else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--root", type=Path, default=Path("."), help="repository root (default: cwd)"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="emit {findings, exit} as JSON"
+    )
+    args = parser.parse_args(argv)
+    lint = Lint(args.root)
+    exit_code = lint.run()
+    if args.json:
+        print(json.dumps({"findings": lint.findings, "exit": exit_code}, indent=2))
+    else:
+        for finding in lint.findings:
+            print(f"{finding['file']}: [{finding['check']}] {finding['message']}")
+        if exit_code == 2:
+            message = "could not check all knowledge files"
+            if not lint.findings:
+                message = "invalid root or no AGENTS.md or .kb/ pages found"
+            print(f"kb_lint: tool error ({message})", file=sys.stderr)
+        else:
+            print(f"kb_lint: {len(lint.findings)} finding(s)")
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
