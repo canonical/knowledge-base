@@ -146,11 +146,63 @@ class LintTest(unittest.TestCase):
                     self.checks({path: GOOD[path] + f"\n# {header}\n"}),
                 )
 
-    def test_documents_last(self):
-        self.assertIn(
-            "documents-last",
-            self.checks({"sub/AGENTS.md": GOOD["sub/AGENTS.md"] + "\n# Overview\n"}),
+    def test_header_order(self):
+        for path, body in [
+            ("sub/AGENTS.md", GOOD["sub/AGENTS.md"] + "\n# Overview\n"),
+            (".kb/alpha.md", GOOD[".kb/alpha.md"] + "\n# Architecture\n\n# Overview\n"),
+            ("AGENTS.md", GOOD["AGENTS.md"].replace("# Directory", "# Important")
+             + "\n# Directory\n"),
+            (".kb/agents.md", GOOD[".kb/agents.md"] + "\n# Important\n"),
+        ]:
+            with self.subTest(path=path):
+                self.assertEqual(self.checks({path: body}), {"header-order"})
+
+    def test_header_order_message(self):
+        root = build(
+            self.tmp(),
+            GOOD
+            | {
+                ".kb/alpha.md": GOOD[".kb/alpha.md"]
+                + "\n# Architecture\n\n# Overview\n\n# Important\n"
+            },
         )
+        lint = kb.Lint(root)
+        self.assertEqual(lint.run(), 1)
+        self.assertEqual(
+            [(f.line, f.message) for f in lint.findings],
+            [
+                (
+                    9,
+                    "section 'Overview' must come before 'Architecture'; "
+                    "order: Preface, Overview, Important, Architecture",
+                ),
+                (
+                    11,
+                    "section 'Important' must come before 'Architecture'; "
+                    "order: Preface, Overview, Important, Architecture",
+                ),
+            ],
+        )
+
+    def test_repeated_sections(self):
+        root = build(self.tmp(), GOOD | {"AGENTS.md": GOOD["AGENTS.md"] + "\n# Documents\n"})
+        lint = kb.Lint(root)
+        self.assertEqual(lint.run(), 1)
+        self.assertEqual(
+            [(f.path.name, f.line, f.check, f.message) for f in lint.findings],
+            [
+                (
+                    "AGENTS.md",
+                    17,
+                    "header-order",
+                    "section 'Documents' repeats the one on line 11; merge them",
+                )
+            ],
+        )
+
+    def test_unknown_headers_are_not_ordered(self):
+        body = GOOD[".kb/alpha.md"] + "\n# Index\n\n# Overview\n"
+        self.assertEqual(self.checks({".kb/alpha.md": body}), {"allowed-headers"})
 
     def test_listing_format(self):
         for section in ["Directory", "Documents"]:
@@ -433,7 +485,7 @@ class LintTest(unittest.TestCase):
 
     def test_repeated_documents_cannot_hide_later_sections(self):
         body = GOOD["AGENTS.md"] + "\n# Overview\n\nText.\n\n# Documents\n"
-        self.assertIn("documents-last", self.checks({"AGENTS.md": body}))
+        self.assertEqual(self.checks({"AGENTS.md": body}), {"header-order"})
 
     def test_fence_closes_before_real_heading(self):
         for opener, closer in [

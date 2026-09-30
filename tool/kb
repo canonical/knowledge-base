@@ -16,8 +16,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 HANDSHAKE = "Read the top-level `.kb/agents.md` file before continuing below."
-KB_HEADERS = frozenset({"Preface", "Overview", "Important", "Architecture"})
-AGENTS_HEADERS = KB_HEADERS | {"Directory", "Documents"}
+# Registered top-level headers in their required order, per .kb/agents.md.
+HEADER_ORDER = (
+    "Preface",
+    "Overview",
+    "Important",
+    "Headers",
+    "Architecture",
+    "Directory",
+    "Documents",
+)
+KB_HEADERS = tuple(
+    header
+    for header in HEADER_ORDER
+    if header not in {"Headers", "Directory", "Documents"}
+)
+AGENTS_HEADERS = tuple(header for header in HEADER_ORDER if header != "Headers")
+RULES_HEADERS = tuple(
+    header for header in HEADER_ORDER if header not in {"Directory", "Documents"}
+)
 HEADING = re.compile(r"^ {0,3}#(?:[ \t]+(.*)|[ \t]*)$")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 LIST_MARKER = re.compile(r"^(?:[-+*]|[0-9]+[.)])(?:[ \t]|$)")
@@ -203,37 +220,48 @@ class Lint:
                 "the file must start with '# Preface'",
             )
 
-        allowed_headers = KB_HEADERS
+        headers = KB_HEADERS
         if document.is_agents:
-            allowed_headers = AGENTS_HEADERS
+            headers = AGENTS_HEADERS
         elif document.is_rules:
-            allowed_headers = KB_HEADERS | {"Headers"}
+            headers = RULES_HEADERS
 
-        documents_line = 0
+        seen: dict[str, int] = {}
+        latest = ""
         preface_end = 0
         preface_last = ""
         section = None
         for number, line in document.lines:
             heading = heading_name(line)
             if heading is not None:
-                if document.is_agents and documents_line:
-                    self.flag(
-                        document.path,
-                        number,
-                        "documents-last",
-                        f"'# {heading}' follows '# Documents' (line {documents_line}); "
-                        "Documents must be the last section",
-                    )
-                if heading not in allowed_headers:
+                if heading not in headers:
                     self.flag(
                         document.path,
                         number,
                         "allowed-headers",
                         f"header '{heading}' is not allowed; use one of "
-                        f"{', '.join(sorted(allowed_headers))}",
+                        f"{', '.join(headers)}",
                     )
-                if heading == "Documents" and not documents_line:
-                    documents_line = number
+                elif heading in seen:
+                    self.flag(
+                        document.path,
+                        number,
+                        "header-order",
+                        f"section '{heading}' repeats the one on line {seen[heading]}; "
+                        "merge them",
+                    )
+                elif latest and headers.index(heading) < headers.index(latest):
+                    self.flag(
+                        document.path,
+                        number,
+                        "header-order",
+                        f"section '{heading}' must come before '{latest}'; "
+                        f"order: {', '.join(headers)}",
+                    )
+                if heading in headers:
+                    seen.setdefault(heading, number)
+                    if not latest or headers.index(heading) > headers.index(latest):
+                        latest = heading
                 if heading == "Preface" and not preface_end:
                     preface_end = number
                 section = heading
