@@ -23,6 +23,7 @@ The design of this structure has the following key goals:
 - Read local `AGENTS.md` files upon navigating directories.
 - Keep the `.kb/*.md` files updated whenever there is something relevant to be documented or updated.
 - Follow the header conventions outlined below. Only the _Preface_ header is required, and the other headers should be omitted if empty or trivial.
+- If the repository has `tool/kb`, run `tool/kb lint <paths you changed>` before committing, and fix everything it reports.
 
 
 # Headers

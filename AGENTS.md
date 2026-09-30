@@ -14,11 +14,6 @@ An optional general project overview. Resist the temptation to document your who
 _[/PLACEHOLDER]_
 
 
-# Important
-
-- Run `tool/kb lint` after editing knowledge files; see `.kb/linting.md` for usage.
-
-
 # Architecture
 
 _[PLACEHOLDER]_
@@ -39,7 +34,6 @@ _[/PLACEHOLDER]_
 # Documents
 
 - `.kb/agents.md` - General rules for the knowledge base reading and writing.
-- `.kb/linting.md` - Checker usage and supported structural checks.
 
 _[PLACEHOLDER]_
 This section, generally optional, is used to provide a short summary of what documentation is available under .kb/*.md and also to other immediately nested AGENTS.md. For the top-level directory, this section will always contain at least the reference to the general rules. This section will typically be maintained by the agent itself.
