@@ -3,7 +3,6 @@
 import errno
 import importlib.machinery
 import importlib.util
-import json
 import os
 import subprocess
 import sys
@@ -73,10 +72,10 @@ def build(root: Path, files: dict[str, str]) -> Path:
     return root
 
 
-def cli(*args: str) -> subprocess.CompletedProcess[str]:
+def cli(*args: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(KB), "lint", *args],
-        cwd=ROOT,
+        cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
@@ -99,16 +98,16 @@ class LintTest(unittest.TestCase):
     def checks(self, changes: dict[str, str] | None = None) -> set[str]:
         lint = kb.Lint(build(self.tmp(), GOOD | (changes or {})))
         lint.run()
-        return {f["check"] for f in lint.findings}
+        return {f.check for f in lint.findings}
+
+    def findings(self, lint: kb.Lint, root: Path) -> list[tuple[str, int, str]]:
+        return [
+            (f.path.relative_to(root).as_posix(), f.line, f.check) for f in lint.findings
+        ]
 
     def test_live_tree_holds(self):
         proc = cli()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-
-    def test_json_mode(self):
-        proc = cli("--json")
-        self.assertEqual(proc.returncode, 0)
-        self.assertEqual(json.loads(proc.stdout), {"findings": [], "exit": 0})
 
     def test_clean_synthetic_tree(self):
         self.assertEqual(self.checks(), set())
@@ -192,30 +191,81 @@ class LintTest(unittest.TestCase):
             set(),
         )
 
-    def test_json_findings(self):
+    def test_text_output(self):
         root = build(self.tmp(), {"AGENTS.md": "wrong\n"})
-        proc = cli("--root", str(root), "--json")
-        payload = json.loads(proc.stdout)
+        proc = cli(cwd=root)
         self.assertEqual(proc.returncode, 1)
-        self.assertEqual(payload["exit"], 1)
-        self.assertEqual(len(payload["findings"]), 1)
-        finding = payload["findings"][0]
-        self.assertEqual(finding["file"], "AGENTS.md")
-        self.assertEqual(finding["check"], "preface-first")
-        self.assertTrue(finding["message"])
+        self.assertEqual(proc.stderr, "")
+        self.assertEqual(
+            proc.stdout,
+            "AGENTS.md:1: the file must start with '# Preface'\n"
+            "kb lint: 1 problem in 1 file. Fix them to follow the rules in "
+            ".kb/agents.md, then run kb lint again.\n",
+        )
 
-    def test_tool_error(self):
-        for kind in ["empty", "missing", "file"]:
-            with self.subTest(kind=kind):
-                target = self.tmp()
-                if kind == "missing":
-                    target = target / "missing"
-                elif kind == "file":
-                    target = target / "file"
-                    target.write_text("text")
-                proc = cli("--root", str(target), "--json")
-                self.assertEqual(proc.returncode, 2)
-                self.assertEqual(json.loads(proc.stdout), {"findings": [], "exit": 2})
+    def test_clean_output(self):
+        root = build(self.tmp(), GOOD)
+        proc = cli(cwd=root)
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(
+            proc.stdout, "kb lint: 5 files checked, no problems found.\n"
+        )
+
+    def test_default_checks_whole_repository(self):
+        root = build(self.tmp(), GOOD | {".kb/alpha.md": "wrong\n"})
+        proc = cli(cwd=root / "sub")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("../.kb/alpha.md:1: ", proc.stdout)
+        self.assertIn("2 problems in 1 file", proc.stdout)
+
+    def test_path_arguments(self):
+        root = build(
+            self.tmp(),
+            GOOD | {".kb/alpha.md": "wrong\n", "AGENTS.md": "wrong\n", "src/main.go": ""},
+        )
+        proc = cli(".kb/alpha.md", "src/main.go", "sub", cwd=root)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(
+            {line.split(":")[0] for line in proc.stdout.splitlines()[:-1]},
+            {".kb/alpha.md"},
+        )
+        self.assertIn("2 problems in 1 file", proc.stdout)
+
+    def test_nothing_to_check(self):
+        for files in [{}, {"src/main.go": ""}]:
+            with self.subTest(files=files):
+                root = build(self.tmp(), files)
+                proc = cli(*files, cwd=root)
+                self.assertEqual(proc.returncode, 0)
+                self.assertEqual(
+                    proc.stdout, "kb lint: no AGENTS.md or .kb/*.md files to check.\n"
+                )
+
+    def test_missing_path(self):
+        root = build(self.tmp(), GOOD)
+        proc = cli("nope.md", "AGENTS.md", cwd=root)
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.stderr, "kb lint: nope.md: no such file or directory\n")
+
+    def test_line_numbers(self):
+        root = build(
+            self.tmp(),
+            {
+                "AGENTS.md": "\n\n# Alpha\n\n# Directory\n\n- bad\n",
+                ".kb/alpha.md": "# Preface\n\nAlpha.\n\n# Overview\n",
+            },
+        )
+        lint = kb.Lint(root)
+        self.assertEqual(lint.run(), 1)
+        self.assertEqual(
+            self.findings(lint, root),
+            [
+                (".kb/alpha.md", 3, "handshake-line"),
+                ("AGENTS.md", 3, "preface-first"),
+                ("AGENTS.md", 3, "allowed-headers"),
+                ("AGENTS.md", 7, "listing-format"),
+            ],
+        )
 
     def test_fenced_headings_are_examples(self):
         for fence in ["```", "~~~~"]:
@@ -239,11 +289,11 @@ class LintTest(unittest.TestCase):
         self.assertEqual(lint.run(), 0)
         self.assertEqual(len(lint.documents), len(GOOD))
 
-    def test_relative_root(self):
+    def test_relative_path(self):
         root = build(self.tmp(), GOOD)
         self.chdir(root.parent)
         lint = kb.Lint(Path(root.name))
-        self.assertEqual(lint.root, root)
+        self.assertEqual(lint.paths, [root])
         self.assertEqual(lint.run(), 0)
 
     def test_each_document_is_read_once(self):
@@ -273,8 +323,8 @@ class LintTest(unittest.TestCase):
         with mock.patch.object(Path, "read_text", read_text):
             self.assertEqual(lint.run(), 2)
         self.assertEqual(
-            {(finding["file"], finding["check"]) for finding in lint.findings},
-            {(".kb/alpha.md", "tool-error"), ("AGENTS.md", "preface-first")},
+            self.findings(lint, root),
+            [(".kb/alpha.md", 0, "tool-error"), ("AGENTS.md", 1, "preface-first")],
         )
 
     def test_root_inspection_error(self):
@@ -286,30 +336,18 @@ class LintTest(unittest.TestCase):
         lint = kb.Lint(root)
         with mock.patch.object(Path, "is_dir", is_dir):
             self.assertEqual(lint.run(), 2)
-        self.assertEqual(len(lint.findings), 1)
-        self.assertEqual(lint.findings[0]["file"], ".")
-        self.assertEqual(lint.findings[0]["check"], "tool-error")
+        self.assertEqual(self.findings(lint, root), [(".", 0, "tool-error")])
+        self.assertIn("cannot inspect", lint.findings[0].message)
 
     def test_invalid_utf8_cli(self):
-        for json_mode in [False, True]:
-            with self.subTest(json_mode=json_mode):
-                root = build(self.tmp(), GOOD)
-                (root / ".kb/alpha.md").write_bytes(b"\xff")
-                arguments = ["--root", str(root)]
-                if json_mode:
-                    arguments.append("--json")
-                result = cli(*arguments)
-                self.assertEqual(result.returncode, 2)
-                self.assertNotIn("Traceback", result.stderr)
-                if json_mode:
-                    payload = json.loads(result.stdout)
-                    self.assertEqual(payload["exit"], 2)
-                    self.assertEqual(payload["findings"][0]["file"], ".kb/alpha.md")
-                    self.assertEqual(payload["findings"][0]["check"], "tool-error")
-                    self.assertEqual(result.stderr, "")
-                else:
-                    self.assertIn(".kb/alpha.md: [tool-error]", result.stdout)
-                    self.assertIn("tool error", result.stderr)
+        root = build(self.tmp(), GOOD)
+        (root / ".kb/alpha.md").write_bytes(b"\xff")
+        result = cli(cwd=root)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            result.stderr, "kb lint: .kb/alpha.md: cannot read: not valid UTF-8\n"
+        )
+        self.assertEqual(result.stdout, "")
 
     def test_git_ignored_files_are_skipped(self):
         root = build(
@@ -332,7 +370,7 @@ class LintTest(unittest.TestCase):
         self.assertEqual(lint.run(), 1)
         self.assertEqual(len(lint.documents), len(GOOD) + 1)
         self.assertEqual(
-            [finding["file"] for finding in lint.findings], ["new/AGENTS.md"]
+            self.findings(lint, root), [("new/AGENTS.md", 1, "preface-first")]
         )
 
     def test_deleted_tracked_file_is_skipped(self):
@@ -351,11 +389,8 @@ class LintTest(unittest.TestCase):
         root = build(self.tmp(repository=False), GOOD)
         lint = kb.Lint(root)
         self.assertEqual(lint.run(), 2)
-        self.assertEqual(
-            [(finding["file"], finding["check"]) for finding in lint.findings],
-            [(".", "tool-error")],
-        )
-        self.assertIn("not inside a git repository", lint.findings[0]["message"])
+        self.assertEqual(self.findings(lint, root), [(".", 0, "tool-error")])
+        self.assertIn("not inside a git repository", lint.findings[0].message)
 
     def test_deterministic_findings(self):
         files = {"z/.kb/page.md": "invalid", "a/AGENTS.md": "invalid"}

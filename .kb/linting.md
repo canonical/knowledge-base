@@ -9,9 +9,9 @@ Read the top-level `.kb/agents.md` file before continuing below.
 
 Run `tool/kb lint` after editing knowledge files. The checker uses only the Python standard library; so do its tests (`python3 -m unittest discover -s tool/tests`).
 
-Use `--root ../other` to check another repository or `--json` for structured output (`{"findings": [...], "exit": N}`). Text findings use `<file>: [<check>] <message>`. Exit codes are 0 for success, 1 for findings, and 2 for an invalid root or no knowledge files.
+Pass files or directories to check only those; the default is the whole repository. Each problem prints as `<file>:<line>: <message>`, followed by a summary of what to do next.
 
-Filesystem and UTF-8 decoding failures produce `tool-error` findings and exit 2, even if readable files also have convention violations. Readable files are still checked. Files are discovered through git, so anything git ignores is skipped; outside a git repository the checker reports a tool error.
+Unreadable files are reported on stderr; readable files are still checked. Files are discovered through git, so anything git ignores is skipped; outside a git repository the checker reports a tool error.
 
 
 # Important
