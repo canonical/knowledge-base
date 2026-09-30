@@ -180,7 +180,7 @@ class LintTest(unittest.TestCase):
             set(),
         )
 
-    def test_documents_in_knowledge_page(self):
+    def test_documents_only_in_agents_files(self):
         self.assertEqual(
             self.checks(
                 {
@@ -188,7 +188,7 @@ class LintTest(unittest.TestCase):
                     + "\n# Documents\n\nRelated material.\n"
                 }
             ),
-            set(),
+            {"allowed-headers"},
         )
 
     def test_text_output(self):
