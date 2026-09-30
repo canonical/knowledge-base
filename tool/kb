@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -22,9 +23,6 @@ KB_HEADERS = frozenset(
     {"Preface", "Overview", "Important", "Architecture", "Documents"}
 )
 AGENTS_HEADERS = KB_HEADERS | {"Directory"}
-IGNORED_DIRECTORIES = frozenset(
-    {".git", "node_modules", ".venv", "__pycache__", "vendor"}
-)
 HEADING = re.compile(r"^ {0,3}#(?:[ \t]+(.*)|[ \t]*)$")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 LIST_MARKER = re.compile(r"^(?:[-+*]|[0-9]+[.)])(?:[ \t]|$)")
@@ -59,6 +57,21 @@ def content_lines(text: str) -> Iterator[tuple[int, str]]:
             yield number, line
 
 
+def git(directory: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(directory), "--literal-pathspecs", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def is_knowledge_file(path: Path) -> bool:
+    return path.name == "AGENTS.md" or (
+        path.parent.name == ".kb" and path.suffix == ".md"
+    )
+
+
 def heading_name(line: str) -> str | None:
     match = HEADING.fullmatch(line)
     if match is None:
@@ -80,7 +93,8 @@ class Document:
 
 class Lint:
     def __init__(self, root: Path) -> None:
-        self.root = Path(os.path.abspath(root))
+        self.root = Path(os.path.realpath(root))
+        self.top = self.root
         self.findings: list[Finding] = []
         self.documents: list[Document] = []
 
@@ -90,26 +104,39 @@ class Lint:
             {"file": relative_path.as_posix(), "check": check, "message": message}
         )
 
-    def traversal_error(self, error: OSError) -> None:
-        path = Path(error.filename) if error.filename else self.root
-        self.flag(path, "tool-error", f"cannot scan directory: {error.strerror}")
-
     def discover(self) -> None:
-        paths: list[Path] = []
-        for directory, subdirectories, filenames in os.walk(
-            self.root, onerror=self.traversal_error, followlinks=False
-        ):
-            subdirectories[:] = sorted(
-                name for name in subdirectories if name not in IGNORED_DIRECTORIES
-            )
-            parent = Path(directory)
-            for name in filenames:
-                if name == "AGENTS.md" or (
-                    parent.name == ".kb" and name.endswith(".md")
-                ):
-                    paths.append(parent / name)
+        """Collect knowledge files that git tracks or would track, honouring ignores."""
+        try:
+            top = git(self.root, "rev-parse", "--show-toplevel")
+        except OSError as error:
+            self.flag(self.root, "tool-error", f"cannot run git: {error.strerror}")
+            return
+        if top.returncode != 0:
+            self.flag(self.root, "tool-error", "not inside a git repository")
+            return
+        self.top = Path(top.stdout.strip())
+        listing = git(
+            self.root,
+            "ls-files",
+            "-z",
+            "--full-name",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            ".",
+        )
+        if listing.returncode != 0:
+            self.flag(self.root, "tool-error", listing.stderr.strip())
+            return
+        paths = {
+            self.top / name
+            for name in listing.stdout.split("\0")
+            if name and is_knowledge_file(Path(name))
+        }
 
-        for path in sorted(paths):
+        # Files deleted from the working tree are still listed from the index.
+        for path in sorted(path for path in paths if os.path.lexists(path)):
             try:
                 text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeError) as error:
@@ -130,7 +157,7 @@ class Lint:
         allowed_headers = KB_HEADERS
         if document.is_agents:
             allowed_headers = AGENTS_HEADERS
-        elif document.path == self.root / ".kb/agents.md":
+        elif document.path == self.top / ".kb/agents.md":
             allowed_headers = KB_HEADERS | {"Headers"}
 
         documents_seen = False
@@ -159,7 +186,7 @@ class Lint:
 
         if not document.is_agents:
             handshakes = {HANDSHAKE}
-            if document.path == self.root / ".kb/agents.md":
+            if document.path == self.top / ".kb/agents.md":
                 handshakes.add(HANDSHAKE_ROOT)
             if not preface_lines or preface_lines[-1] not in handshakes:
                 self.flag(

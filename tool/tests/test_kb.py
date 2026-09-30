@@ -84,10 +84,13 @@ def cli(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 class LintTest(unittest.TestCase):
-    def tmp(self) -> Path:
+    def tmp(self, repository: bool = True) -> Path:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        return Path(directory.name).resolve()
+        path = Path(directory.name).resolve()
+        if repository:
+            subprocess.run(["git", "init", "-q", str(path)], check=True)
+        return path
 
     def chdir(self, path: Path) -> None:
         self.addCleanup(os.chdir, os.getcwd())
@@ -256,23 +259,6 @@ class LintTest(unittest.TestCase):
             self.assertEqual(kb.Lint(root).run(), 0)
         self.assertEqual(sorted(reads), sorted(GOOD))
 
-    def test_ignored_directories_are_not_entered(self):
-        root = build(self.tmp(), GOOD)
-        for directory in kb.IGNORED_DIRECTORIES:
-            build(root, {f"{directory}/AGENTS.md": "invalid"})
-        original_scandir = kb.os.scandir
-        visited = []
-
-        def scandir(path):
-            visited.append(Path(path))
-            return original_scandir(path)
-
-        with mock.patch.object(kb.os, "scandir", scandir):
-            self.assertEqual(kb.Lint(root).run(), 0)
-        self.assertTrue(
-            all(path.name not in kb.IGNORED_DIRECTORIES for path in visited)
-        )
-
     def test_read_error_does_not_hide_other_findings(self):
         root = build(self.tmp(), GOOD | {"AGENTS.md": "invalid"})
         unreadable = root / ".kb/alpha.md"
@@ -290,22 +276,6 @@ class LintTest(unittest.TestCase):
             {(finding["file"], finding["check"]) for finding in lint.findings},
             {(".kb/alpha.md", "tool-error"), ("AGENTS.md", "preface-first")},
         )
-
-    def test_directory_error_is_reported(self):
-        root = build(self.tmp(), GOOD)
-        original_scandir = kb.os.scandir
-
-        def scandir(path):
-            if Path(path) == root / "sub":
-                raise PermissionError(errno.EACCES, "Permission denied", str(path))
-            return original_scandir(path)
-
-        lint = kb.Lint(root)
-        with mock.patch.object(kb.os, "scandir", scandir):
-            self.assertEqual(lint.run(), 2)
-        self.assertEqual(len(lint.findings), 1)
-        self.assertEqual(lint.findings[0]["file"], "sub")
-        self.assertEqual(lint.findings[0]["check"], "tool-error")
 
     def test_root_inspection_error(self):
         root = self.tmp()
@@ -341,15 +311,51 @@ class LintTest(unittest.TestCase):
                     self.assertIn(".kb/alpha.md: [tool-error]", result.stdout)
                     self.assertIn("tool error", result.stderr)
 
-    def test_symlink_policy(self):
-        root = build(self.tmp(), GOOD)
-        (root / "loop").symlink_to(root, target_is_directory=True)
-        external = build(self.tmp(), {"AGENTS.md": "invalid"})
-        (root / "linked-directory").symlink_to(external, target_is_directory=True)
-        (root / ".kb/linked.md").symlink_to(root / ".kb/alpha.md")
+    def test_git_ignored_files_are_skipped(self):
+        root = build(
+            self.tmp(),
+            GOOD
+            | {
+                ".gitignore": "vendor/\n.kb/draft.md\n",
+                "vendor/pkg/AGENTS.md": "invalid",
+                ".kb/draft.md": "invalid",
+            },
+        )
         lint = kb.Lint(root)
         self.assertEqual(lint.run(), 0)
+        self.assertEqual(len(lint.documents), len(GOOD))
+
+    def test_tracked_and_untracked_files_are_checked(self):
+        root = build(self.tmp(), GOOD | {"new/AGENTS.md": "invalid"})
+        subprocess.run(["git", "-C", str(root), "add", "AGENTS.md"], check=True)
+        lint = kb.Lint(root)
+        self.assertEqual(lint.run(), 1)
         self.assertEqual(len(lint.documents), len(GOOD) + 1)
+        self.assertEqual(
+            [finding["file"] for finding in lint.findings], ["new/AGENTS.md"]
+        )
+
+    def test_deleted_tracked_file_is_skipped(self):
+        root = build(self.tmp(), GOOD | {".kb/gone.md": "invalid"})
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        (root / ".kb/gone.md").unlink()
+        self.assertEqual(kb.Lint(root).run(), 0)
+
+    def test_subdirectory_root_keeps_repository_rules(self):
+        root = build(self.tmp(), GOOD)
+        lint = kb.Lint(root / ".kb")
+        self.assertEqual(lint.run(), 0)
+        self.assertEqual(len(lint.documents), 2)
+
+    def test_outside_git_repository(self):
+        root = build(self.tmp(repository=False), GOOD)
+        lint = kb.Lint(root)
+        self.assertEqual(lint.run(), 2)
+        self.assertEqual(
+            [(finding["file"], finding["check"]) for finding in lint.findings],
+            [(".", "tool-error")],
+        )
+        self.assertIn("not inside a git repository", lint.findings[0]["message"])
 
     def test_deterministic_findings(self):
         files = {"z/.kb/page.md": "invalid", "a/AGENTS.md": "invalid"}

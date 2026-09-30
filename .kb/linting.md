@@ -11,7 +11,7 @@ Run `tool/kb lint` after editing knowledge files. The checker uses only the Pyth
 
 Use `--root ../other` to check another repository or `--json` for structured output (`{"findings": [...], "exit": N}`). Text findings use `<file>: [<check>] <message>`. Exit codes are 0 for success, 1 for findings, and 2 for an invalid root or no knowledge files.
 
-Filesystem and UTF-8 decoding failures produce `tool-error` findings and exit 2, even if readable files also have convention violations. Readable files are still checked. Ignored dependency/cache directories and directory symlinks are not traversed; readable file symlinks are supported.
+Filesystem and UTF-8 decoding failures produce `tool-error` findings and exit 2, even if readable files also have convention violations. Readable files are still checked. Files are discovered through git, so anything git ignores is skipped; outside a git repository the checker reports a tool error.
 
 
 # Important
