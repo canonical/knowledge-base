@@ -4,11 +4,13 @@ import errno
 import importlib.machinery
 import importlib.util
 import json
+import os
 import subprocess
 import sys
+import tempfile
+import unittest
 from pathlib import Path
-
-import pytest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 KB = ROOT / "tool/kb"
@@ -63,18 +65,12 @@ Sub.
 }
 
 
-def build(tmp_path: Path, files: dict[str, str]) -> Path:
+def build(root: Path, files: dict[str, str]) -> Path:
     for rel, text in files.items():
-        p = tmp_path / rel
+        p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text, encoding="utf-8")
-    return tmp_path
-
-
-def checks(tmp_path: Path, changes: dict[str, str] | None = None) -> set[str]:
-    lint = kb.Lint(build(tmp_path, GOOD | (changes or {})))
-    lint.run()
-    return {f["check"] for f in lint.findings}
+    return root
 
 
 def cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -87,336 +83,336 @@ def cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_live_tree_holds():
-    proc = cli()
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+class LintTest(unittest.TestCase):
+    def tmp(self) -> Path:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name).resolve()
 
+    def chdir(self, path: Path) -> None:
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(path)
 
-def test_json_mode():
-    proc = cli("--json")
-    assert proc.returncode == 0
-    assert json.loads(proc.stdout) == {"findings": [], "exit": 0}
+    def checks(self, changes: dict[str, str] | None = None) -> set[str]:
+        lint = kb.Lint(build(self.tmp(), GOOD | (changes or {})))
+        lint.run()
+        return {f["check"] for f in lint.findings}
 
+    def test_live_tree_holds(self):
+        proc = cli()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
-def test_clean_synthetic_tree(tmp_path):
-    assert checks(tmp_path) == set()
+    def test_json_mode(self):
+        proc = cli("--json")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(json.loads(proc.stdout), {"findings": [], "exit": 0})
 
+    def test_clean_synthetic_tree(self):
+        self.assertEqual(self.checks(), set())
 
-@pytest.mark.parametrize("body", ["", "\n", "# Alpha\n\ntext\n"])
-def test_preface_first(tmp_path, body):
-    assert "preface-first" in checks(tmp_path, {".kb/alpha.md": body})
+    def test_preface_first(self):
+        for body in ["", "\n", "# Alpha\n\ntext\n"]:
+            with self.subTest(body=body):
+                self.assertIn("preface-first", self.checks({".kb/alpha.md": body}))
 
+    def test_handshake_line(self):
+        for body in [
+            "# Preface\n",
+            "# Preface\n\nAlpha.\n",
+            "# Preface\n\n" + HS.replace(" file", "") + "\n",
+        ]:
+            with self.subTest(body=body):
+                self.assertIn("handshake-line", self.checks({".kb/alpha.md": body}))
 
-@pytest.mark.parametrize(
-    "body",
-    [
-        "# Preface\n",
-        "# Preface\n\nAlpha.\n",
-        "# Preface\n\n" + HS.replace(" file", "") + "\n",
-    ],
-)
-def test_handshake_line(tmp_path, body):
-    assert "handshake-line" in checks(tmp_path, {".kb/alpha.md": body})
+    def test_allowed_headers(self):
+        for path, header in [
+            (".kb/alpha.md", "Index"),
+            (".kb/alpha.md", "Directory"),
+            (".kb/alpha.md", "Headers"),
+            ("AGENTS.md", "Headers"),
+        ]:
+            with self.subTest(path=path, header=header):
+                self.assertIn(
+                    "allowed-headers",
+                    self.checks({path: GOOD[path] + f"\n# {header}\n"}),
+                )
 
-
-@pytest.mark.parametrize(
-    "path,header",
-    [
-        (".kb/alpha.md", "Index"),
-        (".kb/alpha.md", "Directory"),
-        (".kb/alpha.md", "Headers"),
-        ("AGENTS.md", "Headers"),
-    ],
-)
-def test_allowed_headers(tmp_path, path, header):
-    assert "allowed-headers" in checks(tmp_path, {path: GOOD[path] + f"\n# {header}\n"})
-
-
-def test_documents_last(tmp_path):
-    assert "documents-last" in checks(
-        tmp_path, {"sub/AGENTS.md": GOOD["sub/AGENTS.md"] + "\n# Overview\n"}
-    )
-
-
-@pytest.mark.parametrize("section", ["Directory", "Documents"])
-@pytest.mark.parametrize(
-    "item",
-    [
-        "- `file`: Description.",
-        "- `file` - ",
-        "- file - Description.",
-        "* `file` - Description.",
-        "1. `file` - Description.",
-    ],
-)
-def test_listing_format(tmp_path, section, item):
-    body = "# Preface\n\n" + HS + f"\n\n# {section}\n\n{item}\n"
-    assert "listing-format" in checks(tmp_path, {"sub/AGENTS.md": body})
-
-
-def test_ordinary_listing_content(tmp_path):
-    body = GOOD["AGENTS.md"] + "\nExplanation.\n\n```text\n- illustrative item\n```\n"
-    assert checks(tmp_path, {"AGENTS.md": body}) == set()
-
-
-def test_existing_conventions_remain_valid(tmp_path):
-    # No new size, uniqueness, indexing, reachability, or path-existence policies.
-    assert (
-        checks(
-            tmp_path,
-            {
-                "AGENTS.md": GOOD["AGENTS.md"] + "\nprose" * 200,
-                "sub/.kb/alpha.md": GOOD[".kb/alpha.md"],
-                ".kb/unlisted.md": GOOD[".kb/alpha.md"],
-                "sub/AGENTS.md": "# Preface\n\nSub.\n\n"
-                + HS
-                + "\nSee `.kb/missing.md`.\n",
-            },
+    def test_documents_last(self):
+        self.assertIn(
+            "documents-last",
+            self.checks({"sub/AGENTS.md": GOOD["sub/AGENTS.md"] + "\n# Overview\n"}),
         )
-        == set()
-    )
 
+    def test_listing_format(self):
+        for section in ["Directory", "Documents"]:
+            for item in [
+                "- `file`: Description.",
+                "- `file` - ",
+                "- file - Description.",
+                "* `file` - Description.",
+                "1. `file` - Description.",
+            ]:
+                with self.subTest(section=section, item=item):
+                    body = "# Preface\n\n" + HS + f"\n\n# {section}\n\n{item}\n"
+                    self.assertIn(
+                        "listing-format", self.checks({"sub/AGENTS.md": body})
+                    )
 
-def test_documents_in_knowledge_page(tmp_path):
-    assert (
-        checks(
-            tmp_path,
-            {
-                ".kb/alpha.md": GOOD[".kb/alpha.md"]
-                + "\n# Documents\n\nRelated material.\n"
-            },
+    def test_ordinary_listing_content(self):
+        body = GOOD["AGENTS.md"] + "\nExplanation.\n\n```text\n- illustrative item\n```\n"
+        self.assertEqual(self.checks({"AGENTS.md": body}), set())
+
+    def test_existing_conventions_remain_valid(self):
+        # No new size, uniqueness, indexing, reachability, or path-existence policies.
+        self.assertEqual(
+            self.checks(
+                {
+                    "AGENTS.md": GOOD["AGENTS.md"] + "\nprose" * 200,
+                    "sub/.kb/alpha.md": GOOD[".kb/alpha.md"],
+                    ".kb/unlisted.md": GOOD[".kb/alpha.md"],
+                    "sub/AGENTS.md": "# Preface\n\nSub.\n\n"
+                    + HS
+                    + "\nSee `.kb/missing.md`.\n",
+                }
+            ),
+            set(),
         )
-        == set()
-    )
 
+    def test_documents_in_knowledge_page(self):
+        self.assertEqual(
+            self.checks(
+                {
+                    ".kb/alpha.md": GOOD[".kb/alpha.md"]
+                    + "\n# Documents\n\nRelated material.\n"
+                }
+            ),
+            set(),
+        )
 
-def test_json_findings(tmp_path):
-    build(tmp_path, {"AGENTS.md": "wrong\n"})
-    proc = cli("--root", str(tmp_path), "--json")
-    payload = json.loads(proc.stdout)
-    assert proc.returncode == payload["exit"] == 1
-    assert len(payload["findings"]) == 1
-    finding = payload["findings"][0]
-    assert finding["file"] == "AGENTS.md"
-    assert finding["check"] == "preface-first"
-    assert finding["message"]
+    def test_json_findings(self):
+        root = build(self.tmp(), {"AGENTS.md": "wrong\n"})
+        proc = cli("--root", str(root), "--json")
+        payload = json.loads(proc.stdout)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(payload["exit"], 1)
+        self.assertEqual(len(payload["findings"]), 1)
+        finding = payload["findings"][0]
+        self.assertEqual(finding["file"], "AGENTS.md")
+        self.assertEqual(finding["check"], "preface-first")
+        self.assertTrue(finding["message"])
 
+    def test_tool_error(self):
+        for kind in ["empty", "missing", "file"]:
+            with self.subTest(kind=kind):
+                target = self.tmp()
+                if kind == "missing":
+                    target = target / "missing"
+                elif kind == "file":
+                    target = target / "file"
+                    target.write_text("text")
+                proc = cli("--root", str(target), "--json")
+                self.assertEqual(proc.returncode, 2)
+                self.assertEqual(json.loads(proc.stdout), {"findings": [], "exit": 2})
 
-@pytest.mark.parametrize("kind", ["empty", "missing", "file"])
-def test_tool_error(tmp_path, kind):
-    target = tmp_path
-    if kind == "missing":
-        target = tmp_path / "missing"
-    elif kind == "file":
-        target = tmp_path / "file"
-        target.write_text("text")
-    proc = cli("--root", str(target), "--json")
-    assert proc.returncode == 2
-    assert json.loads(proc.stdout) == {"findings": [], "exit": 2}
+    def test_fenced_headings_are_examples(self):
+        for fence in ["```", "~~~~"]:
+            with self.subTest(fence=fence):
+                body = (
+                    GOOD["AGENTS.md"]
+                    + f"\n{fence}markdown\n# Index\n- invalid example\n{fence}\n"
+                )
+                self.assertEqual(self.checks({"AGENTS.md": body}), set())
 
+    def test_repeat_runs_discard_previous_results(self):
+        root = build(self.tmp(), GOOD)
+        lint = kb.Lint(root)
+        page = root / ".kb/alpha.md"
+        page.write_text("wrong", encoding="utf-8")
+        self.assertEqual(lint.run(), 1)
+        page.write_text(GOOD[".kb/alpha.md"], encoding="utf-8")
+        self.assertEqual(lint.run(), 0)
+        self.assertEqual(lint.findings, [])
+        self.assertEqual(len(lint.documents), len(GOOD))
+        self.assertEqual(lint.run(), 0)
+        self.assertEqual(len(lint.documents), len(GOOD))
 
-@pytest.mark.parametrize("fence", ["```", "~~~~"])
-def test_fenced_headings_are_examples(tmp_path, fence):
-    body = (
-        GOOD["AGENTS.md"] + f"\n{fence}markdown\n# Index\n- invalid example\n{fence}\n"
-    )
-    assert checks(tmp_path, {"AGENTS.md": body}) == set()
+    def test_relative_root(self):
+        root = build(self.tmp(), GOOD)
+        self.chdir(root.parent)
+        lint = kb.Lint(Path(root.name))
+        self.assertEqual(lint.root, root)
+        self.assertEqual(lint.run(), 0)
 
+    def test_each_document_is_read_once(self):
+        root = build(self.tmp(), GOOD)
+        original_read = Path.read_text
+        reads = []
 
-def test_repeat_runs_discard_previous_results(tmp_path):
-    build(tmp_path, GOOD)
-    lint = kb.Lint(tmp_path)
-    page = tmp_path / ".kb/alpha.md"
-    page.write_text("wrong", encoding="utf-8")
-    assert lint.run() == 1
-    page.write_text(GOOD[".kb/alpha.md"], encoding="utf-8")
-    assert lint.run() == 0
-    assert lint.findings == []
-    assert len(lint.documents) == len(GOOD)
-    assert lint.run() == 0
-    assert len(lint.documents) == len(GOOD)
+        def read_text(path, *args, **kwargs):
+            reads.append(path.relative_to(root).as_posix())
+            return original_read(path, *args, **kwargs)
 
+        with mock.patch.object(Path, "read_text", read_text):
+            self.assertEqual(kb.Lint(root).run(), 0)
+        self.assertEqual(sorted(reads), sorted(GOOD))
 
-def test_relative_root(tmp_path, monkeypatch):
-    build(tmp_path, GOOD)
-    monkeypatch.chdir(tmp_path.parent)
-    lint = kb.Lint(Path(tmp_path.name))
-    assert lint.root == tmp_path
-    assert lint.run() == 0
+    def test_ignored_directories_are_not_entered(self):
+        root = build(self.tmp(), GOOD)
+        for directory in kb.IGNORED_DIRECTORIES:
+            build(root, {f"{directory}/AGENTS.md": "invalid"})
+        original_scandir = kb.os.scandir
+        visited = []
 
+        def scandir(path):
+            visited.append(Path(path))
+            return original_scandir(path)
 
-def test_each_document_is_read_once(tmp_path, monkeypatch):
-    build(tmp_path, GOOD)
-    original_read = Path.read_text
-    reads = []
+        with mock.patch.object(kb.os, "scandir", scandir):
+            self.assertEqual(kb.Lint(root).run(), 0)
+        self.assertTrue(
+            all(path.name not in kb.IGNORED_DIRECTORIES for path in visited)
+        )
 
-    def read_text(path, *args, **kwargs):
-        reads.append(path.relative_to(tmp_path).as_posix())
-        return original_read(path, *args, **kwargs)
+    def test_read_error_does_not_hide_other_findings(self):
+        root = build(self.tmp(), GOOD | {"AGENTS.md": "invalid"})
+        unreadable = root / ".kb/alpha.md"
+        original_read = Path.read_text
 
-    monkeypatch.setattr(Path, "read_text", read_text)
-    assert kb.Lint(tmp_path).run() == 0
-    assert sorted(reads) == sorted(GOOD)
+        def read_text(path, *args, **kwargs):
+            if path == unreadable:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return original_read(path, *args, **kwargs)
 
+        lint = kb.Lint(root)
+        with mock.patch.object(Path, "read_text", read_text):
+            self.assertEqual(lint.run(), 2)
+        self.assertEqual(
+            {(finding["file"], finding["check"]) for finding in lint.findings},
+            {(".kb/alpha.md", "tool-error"), ("AGENTS.md", "preface-first")},
+        )
 
-def test_ignored_directories_are_not_entered(tmp_path, monkeypatch):
-    build(tmp_path, GOOD)
-    for directory in kb.IGNORED_DIRECTORIES:
-        build(tmp_path, {f"{directory}/AGENTS.md": "invalid"})
-    original_scandir = kb.os.scandir
-    visited = []
+    def test_directory_error_is_reported(self):
+        root = build(self.tmp(), GOOD)
+        original_scandir = kb.os.scandir
 
-    def scandir(path):
-        visited.append(Path(path))
-        return original_scandir(path)
+        def scandir(path):
+            if Path(path) == root / "sub":
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return original_scandir(path)
 
-    monkeypatch.setattr(kb.os, "scandir", scandir)
-    assert kb.Lint(tmp_path).run() == 0
-    assert all(path.name not in kb.IGNORED_DIRECTORIES for path in visited)
+        lint = kb.Lint(root)
+        with mock.patch.object(kb.os, "scandir", scandir):
+            self.assertEqual(lint.run(), 2)
+        self.assertEqual(len(lint.findings), 1)
+        self.assertEqual(lint.findings[0]["file"], "sub")
+        self.assertEqual(lint.findings[0]["check"], "tool-error")
 
+    def test_root_inspection_error(self):
+        root = self.tmp()
 
-def test_read_error_does_not_hide_other_findings(tmp_path, monkeypatch):
-    build(tmp_path, GOOD | {"AGENTS.md": "invalid"})
-    unreadable = tmp_path / ".kb/alpha.md"
-    original_read = Path.read_text
-
-    def read_text(path, *args, **kwargs):
-        if path == unreadable:
+        def is_dir(path):
             raise PermissionError(errno.EACCES, "Permission denied", str(path))
-        return original_read(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", read_text)
-    lint = kb.Lint(tmp_path)
-    assert lint.run() == 2
-    assert {(finding["file"], finding["check"]) for finding in lint.findings} == {
-        (".kb/alpha.md", "tool-error"),
-        ("AGENTS.md", "preface-first"),
-    }
+        lint = kb.Lint(root)
+        with mock.patch.object(Path, "is_dir", is_dir):
+            self.assertEqual(lint.run(), 2)
+        self.assertEqual(len(lint.findings), 1)
+        self.assertEqual(lint.findings[0]["file"], ".")
+        self.assertEqual(lint.findings[0]["check"], "tool-error")
 
+    def test_invalid_utf8_cli(self):
+        for json_mode in [False, True]:
+            with self.subTest(json_mode=json_mode):
+                root = build(self.tmp(), GOOD)
+                (root / ".kb/alpha.md").write_bytes(b"\xff")
+                arguments = ["--root", str(root)]
+                if json_mode:
+                    arguments.append("--json")
+                result = cli(*arguments)
+                self.assertEqual(result.returncode, 2)
+                self.assertNotIn("Traceback", result.stderr)
+                if json_mode:
+                    payload = json.loads(result.stdout)
+                    self.assertEqual(payload["exit"], 2)
+                    self.assertEqual(payload["findings"][0]["file"], ".kb/alpha.md")
+                    self.assertEqual(payload["findings"][0]["check"], "tool-error")
+                    self.assertEqual(result.stderr, "")
+                else:
+                    self.assertIn(".kb/alpha.md: [tool-error]", result.stdout)
+                    self.assertIn("tool error", result.stderr)
 
-def test_directory_error_is_reported(tmp_path, monkeypatch):
-    build(tmp_path, GOOD)
-    original_scandir = kb.os.scandir
+    def test_symlink_policy(self):
+        root = build(self.tmp(), GOOD)
+        (root / "loop").symlink_to(root, target_is_directory=True)
+        external = build(self.tmp(), {"AGENTS.md": "invalid"})
+        (root / "linked-directory").symlink_to(external, target_is_directory=True)
+        (root / ".kb/linked.md").symlink_to(root / ".kb/alpha.md")
+        lint = kb.Lint(root)
+        self.assertEqual(lint.run(), 0)
+        self.assertEqual(len(lint.documents), len(GOOD) + 1)
 
-    def scandir(path):
-        if Path(path) == tmp_path / "sub":
-            raise PermissionError(errno.EACCES, "Permission denied", str(path))
-        return original_scandir(path)
+    def test_deterministic_findings(self):
+        files = {"z/.kb/page.md": "invalid", "a/AGENTS.md": "invalid"}
+        root = build(self.tmp(), files)
+        lint = kb.Lint(root)
+        self.assertEqual(lint.run(), 1)
+        first = lint.findings.copy()
+        for name in files:
+            (root / name).unlink()
+        build(root, dict(reversed(list(files.items()))))
+        self.assertEqual(lint.run(), 1)
+        self.assertEqual(lint.findings, first)
 
-    monkeypatch.setattr(kb.os, "scandir", scandir)
-    lint = kb.Lint(tmp_path)
-    assert lint.run() == 2
-    assert len(lint.findings) == 1
-    assert lint.findings[0]["file"] == "sub"
-    assert lint.findings[0]["check"] == "tool-error"
+    def test_heading_variants_are_checked(self):
+        for heading in [" # Index", "   # Index ###", "# Index\t###"]:
+            with self.subTest(heading=heading):
+                self.assertIn(
+                    "allowed-headers",
+                    self.checks({".kb/alpha.md": GOOD[".kb/alpha.md"] + f"\n{heading}\n"}),
+                )
 
+    def test_valid_heading_variants(self):
+        body = GOOD[".kb/alpha.md"] + "\n   # Overview ###\n\nText.\n"
+        self.assertEqual(self.checks({".kb/alpha.md": body}), set())
 
-def test_root_inspection_error(tmp_path, monkeypatch):
-    def is_dir(path):
-        raise PermissionError(errno.EACCES, "Permission denied", str(path))
+    def test_repeated_documents_cannot_hide_later_sections(self):
+        body = GOOD["AGENTS.md"] + "\n# Overview\n\nText.\n\n# Documents\n"
+        self.assertIn("documents-last", self.checks({"AGENTS.md": body}))
 
-    monkeypatch.setattr(Path, "is_dir", is_dir)
-    lint = kb.Lint(tmp_path)
-    assert lint.run() == 2
-    assert len(lint.findings) == 1
-    assert lint.findings[0]["file"] == "."
-    assert lint.findings[0]["check"] == "tool-error"
+    def test_fence_closes_before_real_heading(self):
+        for opener, closer in [
+            ("````python", "`````"),
+            ("~~~text", "~~~~"),
+            ("   ```", " ```"),
+        ]:
+            with self.subTest(opener=opener, closer=closer):
+                body = GOOD[".kb/alpha.md"] + f"\n{opener}\n# Example\n{closer}\n# Index\n"
+                self.assertEqual(
+                    self.checks({".kb/alpha.md": body}), {"allowed-headers"}
+                )
 
+    def test_false_fence_closer_keeps_examples_hidden(self):
+        for false_closer in ["~~~", "``", "``` text"]:
+            with self.subTest(false_closer=false_closer):
+                body = GOOD["AGENTS.md"] + f"\n```\n{false_closer}\n# Example\n```\n"
+                self.assertEqual(self.checks({"AGENTS.md": body}), set())
 
-@pytest.mark.parametrize("json_mode", [False, True])
-def test_invalid_utf8_cli(tmp_path, json_mode):
-    build(tmp_path, GOOD)
-    (tmp_path / ".kb/alpha.md").write_bytes(b"\xff")
-    arguments = ["--root", str(tmp_path)]
-    if json_mode:
-        arguments.append("--json")
-    result = cli(*arguments)
-    assert result.returncode == 2
-    assert "Traceback" not in result.stderr
-    if json_mode:
-        payload = json.loads(result.stdout)
-        assert payload["exit"] == 2
-        assert payload["findings"][0]["file"] == ".kb/alpha.md"
-        assert payload["findings"][0]["check"] == "tool-error"
-        assert result.stderr == ""
-    else:
-        assert ".kb/alpha.md: [tool-error]" in result.stdout
-        assert "tool error" in result.stderr
+    def test_invalid_backtick_opener_does_not_hide_heading(self):
+        body = GOOD[".kb/alpha.md"] + "\n# Overview\n\n```python`invalid\n# Index\n"
+        self.assertEqual(self.checks({".kb/alpha.md": body}), {"allowed-headers"})
 
+    def test_empty_listing_bullet(self):
+        for bullet in ["-", "*", "+", "1.", "2)"]:
+            with self.subTest(bullet=bullet):
+                self.assertIn(
+                    "listing-format",
+                    self.checks({"AGENTS.md": GOOD["AGENTS.md"] + f"\n{bullet}\n"}),
+                )
 
-def test_symlink_policy(tmp_path):
-    build(tmp_path, GOOD)
-    (tmp_path / "loop").symlink_to(tmp_path, target_is_directory=True)
-    external = tmp_path.parent / f"{tmp_path.name}-external"
-    build(external, {"AGENTS.md": "invalid"})
-    (tmp_path / "linked-directory").symlink_to(external, target_is_directory=True)
-    (tmp_path / ".kb/linked.md").symlink_to(tmp_path / ".kb/alpha.md")
-    lint = kb.Lint(tmp_path)
-    assert lint.run() == 0
-    assert len(lint.documents) == len(GOOD) + 1
-
-
-def test_deterministic_findings(tmp_path):
-    files = {"z/.kb/page.md": "invalid", "a/AGENTS.md": "invalid"}
-    build(tmp_path, files)
-    lint = kb.Lint(tmp_path)
-    assert lint.run() == 1
-    first = lint.findings.copy()
-    for name in files:
-        (tmp_path / name).unlink()
-    build(tmp_path, dict(reversed(list(files.items()))))
-    assert lint.run() == 1
-    assert lint.findings == first
-
-
-@pytest.mark.parametrize("heading", [" # Index", "   # Index ###", "# Index\t###"])
-def test_heading_variants_are_checked(tmp_path, heading):
-    assert "allowed-headers" in checks(
-        tmp_path, {".kb/alpha.md": GOOD[".kb/alpha.md"] + f"\n{heading}\n"}
-    )
-
-
-def test_valid_heading_variants(tmp_path):
-    body = GOOD[".kb/alpha.md"] + "\n   # Overview ###\n\nText.\n"
-    assert checks(tmp_path, {".kb/alpha.md": body}) == set()
-
-
-def test_repeated_documents_cannot_hide_later_sections(tmp_path):
-    body = GOOD["AGENTS.md"] + "\n# Overview\n\nText.\n\n# Documents\n"
-    assert "documents-last" in checks(tmp_path, {"AGENTS.md": body})
-
-
-@pytest.mark.parametrize(
-    "opener,closer",
-    [
-        ("````python", "`````"),
-        ("~~~text", "~~~~"),
-        ("   ```", " ```"),
-    ],
-)
-def test_fence_closes_before_real_heading(tmp_path, opener, closer):
-    body = GOOD[".kb/alpha.md"] + f"\n{opener}\n# Example\n{closer}\n# Index\n"
-    assert checks(tmp_path, {".kb/alpha.md": body}) == {"allowed-headers"}
+    def test_nested_listing_explanation_is_ignored(self):
+        body = GOOD["AGENTS.md"] + "  - explanatory detail\n"
+        self.assertEqual(self.checks({"AGENTS.md": body}), set())
 
 
-@pytest.mark.parametrize("false_closer", ["~~~", "``", "``` text"])
-def test_false_fence_closer_keeps_examples_hidden(tmp_path, false_closer):
-    body = GOOD["AGENTS.md"] + f"\n```\n{false_closer}\n# Example\n```\n"
-    assert checks(tmp_path, {"AGENTS.md": body}) == set()
-
-
-def test_invalid_backtick_opener_does_not_hide_heading(tmp_path):
-    body = GOOD[".kb/alpha.md"] + "\n# Overview\n\n```python`invalid\n# Index\n"
-    assert checks(tmp_path, {".kb/alpha.md": body}) == {"allowed-headers"}
-
-
-@pytest.mark.parametrize("bullet", ["-", "*", "+", "1.", "2)"])
-def test_empty_listing_bullet(tmp_path, bullet):
-    assert "listing-format" in checks(
-        tmp_path, {"AGENTS.md": GOOD["AGENTS.md"] + f"\n{bullet}\n"}
-    )
-
-
-def test_nested_listing_explanation_is_ignored(tmp_path):
-    body = GOOD["AGENTS.md"] + "  - explanatory detail\n"
-    assert checks(tmp_path, {"AGENTS.md": body}) == set()
+if __name__ == "__main__":
+    unittest.main()

@@ -12,4 +12,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: tool/kb lint
-      - run: pip install pytest && python3 -m pytest -q tool/tests/
+      - run: python3 -m unittest discover -s tool/tests -v
