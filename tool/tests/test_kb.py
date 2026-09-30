@@ -39,11 +39,11 @@ Root.
 - `.kb/alpha.md` - Alpha page.
 - `sub/AGENTS.md` - Sub index.
 """,
-    ".kb/agents.md": """# Preface
+    ".kb/agents.md": f"""# Preface
 
 Rules.
 
-Read the top-level `.kb/agents.md` before continuing below.
+{HS}
 
 # Headers
 
@@ -126,6 +126,13 @@ class LintTest(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertIn("handshake-line", self.checks({".kb/alpha.md": body}))
 
+    def test_single_handshake(self):
+        short = HS.replace(" file", "")
+        for path in [".kb/agents.md", ".kb/alpha.md", "AGENTS.md", "sub/AGENTS.md"]:
+            with self.subTest(path=path):
+                body = GOOD[path].replace(HS, short)
+                self.assertIn("handshake-line", self.checks({path: body}))
+
     def test_allowed_headers(self):
         for path, header in [
             (".kb/alpha.md", "Index"),
@@ -172,9 +179,7 @@ class LintTest(unittest.TestCase):
                     "AGENTS.md": GOOD["AGENTS.md"] + "\nprose" * 200,
                     "sub/.kb/alpha.md": GOOD[".kb/alpha.md"],
                     ".kb/unlisted.md": GOOD[".kb/alpha.md"],
-                    "sub/AGENTS.md": "# Preface\n\nSub.\n\n"
-                    + HS
-                    + "\nSee `.kb/missing.md`.\n",
+                    "sub/AGENTS.md": "# Preface\n\nSee `.kb/missing.md`.\n\n" + HS + "\n",
                 }
             ),
             set(),
@@ -199,7 +204,8 @@ class LintTest(unittest.TestCase):
         self.assertEqual(
             proc.stdout,
             "AGENTS.md:1: the file must start with '# Preface'\n"
-            "kb lint: 1 problem in 1 file. Fix them to follow the rules in "
+            f'AGENTS.md:1: the Preface must end with the line "{HS}"\n'
+            "kb lint: 2 problems in 1 file. Fix them to follow the rules in "
             ".kb/agents.md, then run kb lint again.\n",
         )
 
@@ -261,6 +267,7 @@ class LintTest(unittest.TestCase):
             self.findings(lint, root),
             [
                 (".kb/alpha.md", 3, "handshake-line"),
+                ("AGENTS.md", 1, "handshake-line"),
                 ("AGENTS.md", 3, "preface-first"),
                 ("AGENTS.md", 3, "allowed-headers"),
                 ("AGENTS.md", 7, "listing-format"),
@@ -324,7 +331,11 @@ class LintTest(unittest.TestCase):
             self.assertEqual(lint.run(), 2)
         self.assertEqual(
             self.findings(lint, root),
-            [(".kb/alpha.md", 0, "tool-error"), ("AGENTS.md", 1, "preface-first")],
+            [
+                (".kb/alpha.md", 0, "tool-error"),
+                ("AGENTS.md", 1, "preface-first"),
+                ("AGENTS.md", 1, "handshake-line"),
+            ],
         )
 
     def test_root_inspection_error(self):
@@ -370,7 +381,11 @@ class LintTest(unittest.TestCase):
         self.assertEqual(lint.run(), 1)
         self.assertEqual(len(lint.documents), len(GOOD) + 1)
         self.assertEqual(
-            self.findings(lint, root), [("new/AGENTS.md", 1, "preface-first")]
+            self.findings(lint, root),
+            [
+                ("new/AGENTS.md", 1, "preface-first"),
+                ("new/AGENTS.md", 1, "handshake-line"),
+            ],
         )
 
     def test_deleted_tracked_file_is_skipped(self):

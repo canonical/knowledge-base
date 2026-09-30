@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 HANDSHAKE = "Read the top-level `.kb/agents.md` file before continuing below."
-HANDSHAKE_ROOT = "Read the top-level `.kb/agents.md` before continuing below."
 KB_HEADERS = frozenset({"Preface", "Overview", "Important", "Architecture"})
 AGENTS_HEADERS = KB_HEADERS | {"Directory", "Documents"}
 HEADING = re.compile(r"^ {0,3}#(?:[ \t]+(.*)|[ \t]*)$")
@@ -241,17 +240,13 @@ class Lint:
             elif section == "Preface" and line.strip():
                 preface_last, preface_end = line.strip(), number
 
-        if not document.is_agents:
-            handshakes = {HANDSHAKE}
-            if document.is_rules:
-                handshakes.add(HANDSHAKE_ROOT)
-            if preface_last not in handshakes:
-                self.flag(
-                    document.path,
-                    preface_end or 1,
-                    "handshake-line",
-                    f'the Preface must end with the line "{HANDSHAKE}"',
-                )
+        if preface_last != HANDSHAKE:
+            self.flag(
+                document.path,
+                preface_end or 1,
+                "handshake-line",
+                f'the Preface must end with the line "{HANDSHAKE}"',
+            )
 
     def check_listings(self, document: Document) -> None:
         if not document.is_agents:
