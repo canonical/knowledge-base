@@ -28,7 +28,7 @@ To adopt these rules, simply:
 3. Encourage agents to read and write content into the knowledge base.
 
 
-Optionally, copy `tools/kb_lint.py` and run it in CI or before committing to check document structure. See `.kb/linting.md` for usage.
+Optionally, copy `tool/kb` and run `tool/kb lint` in CI or before committing to check document structure. See `.kb/linting.md` for usage.
 
 # Updating
 

@@ -16,7 +16,7 @@ _[/PLACEHOLDER]_
 
 # Important
 
-- Run `python3 tools/kb_lint.py` after editing knowledge files; see `.kb/linting.md` for usage.
+- Run `tool/kb lint` after editing knowledge files; see `.kb/linting.md` for usage.
 
 
 # Architecture
@@ -28,8 +28,7 @@ _[/PLACEHOLDER]_
 
 # Directory
 
-- `tools/` - The knowledge base structure checker.
-- `tests/` - Regression tests for the checker.
+- `tool/` - The `kb` knowledge base helper (`kb lint`) and its tests.
 - `sample/` - Non-existent sample entry to illustrate the formatting here.
 
 _[PLACEHOLDER]_

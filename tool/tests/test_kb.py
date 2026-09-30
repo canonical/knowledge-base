@@ -1,6 +1,8 @@
 """Check the live repository and isolated violations of structural conventions."""
 
 import errno
+import importlib.machinery
+import importlib.util
 import json
 import subprocess
 import sys
@@ -8,9 +10,15 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "tools"))
-import kb_lint  # noqa: E402
+ROOT = Path(__file__).resolve().parents[2]
+KB = ROOT / "tool/kb"
+
+sys.dont_write_bytecode = True
+_loader = importlib.machinery.SourceFileLoader("kb", str(KB))
+_spec = importlib.util.spec_from_loader("kb", _loader)
+kb = importlib.util.module_from_spec(_spec)
+sys.modules["kb"] = kb
+_loader.exec_module(kb)
 
 HS = "Read the top-level `.kb/agents.md` file before continuing below."
 GOOD = {
@@ -64,14 +72,14 @@ def build(tmp_path: Path, files: dict[str, str]) -> Path:
 
 
 def checks(tmp_path: Path, changes: dict[str, str] | None = None) -> set[str]:
-    lint = kb_lint.Lint(build(tmp_path, GOOD | (changes or {})))
+    lint = kb.Lint(build(tmp_path, GOOD | (changes or {})))
     lint.run()
     return {f["check"] for f in lint.findings}
 
 
 def cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(ROOT / "tools/kb_lint.py"), *args],
+        [sys.executable, str(KB), "lint", *args],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -217,7 +225,7 @@ def test_fenced_headings_are_examples(tmp_path, fence):
 
 def test_repeat_runs_discard_previous_results(tmp_path):
     build(tmp_path, GOOD)
-    lint = kb_lint.Lint(tmp_path)
+    lint = kb.Lint(tmp_path)
     page = tmp_path / ".kb/alpha.md"
     page.write_text("wrong", encoding="utf-8")
     assert lint.run() == 1
@@ -232,7 +240,7 @@ def test_repeat_runs_discard_previous_results(tmp_path):
 def test_relative_root(tmp_path, monkeypatch):
     build(tmp_path, GOOD)
     monkeypatch.chdir(tmp_path.parent)
-    lint = kb_lint.Lint(Path(tmp_path.name))
+    lint = kb.Lint(Path(tmp_path.name))
     assert lint.root == tmp_path
     assert lint.run() == 0
 
@@ -247,24 +255,24 @@ def test_each_document_is_read_once(tmp_path, monkeypatch):
         return original_read(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", read_text)
-    assert kb_lint.Lint(tmp_path).run() == 0
+    assert kb.Lint(tmp_path).run() == 0
     assert sorted(reads) == sorted(GOOD)
 
 
 def test_ignored_directories_are_not_entered(tmp_path, monkeypatch):
     build(tmp_path, GOOD)
-    for directory in kb_lint.IGNORED_DIRECTORIES:
+    for directory in kb.IGNORED_DIRECTORIES:
         build(tmp_path, {f"{directory}/AGENTS.md": "invalid"})
-    original_scandir = kb_lint.os.scandir
+    original_scandir = kb.os.scandir
     visited = []
 
     def scandir(path):
         visited.append(Path(path))
         return original_scandir(path)
 
-    monkeypatch.setattr(kb_lint.os, "scandir", scandir)
-    assert kb_lint.Lint(tmp_path).run() == 0
-    assert all(path.name not in kb_lint.IGNORED_DIRECTORIES for path in visited)
+    monkeypatch.setattr(kb.os, "scandir", scandir)
+    assert kb.Lint(tmp_path).run() == 0
+    assert all(path.name not in kb.IGNORED_DIRECTORIES for path in visited)
 
 
 def test_read_error_does_not_hide_other_findings(tmp_path, monkeypatch):
@@ -278,7 +286,7 @@ def test_read_error_does_not_hide_other_findings(tmp_path, monkeypatch):
         return original_read(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", read_text)
-    lint = kb_lint.Lint(tmp_path)
+    lint = kb.Lint(tmp_path)
     assert lint.run() == 2
     assert {(finding["file"], finding["check"]) for finding in lint.findings} == {
         (".kb/alpha.md", "tool-error"),
@@ -288,15 +296,15 @@ def test_read_error_does_not_hide_other_findings(tmp_path, monkeypatch):
 
 def test_directory_error_is_reported(tmp_path, monkeypatch):
     build(tmp_path, GOOD)
-    original_scandir = kb_lint.os.scandir
+    original_scandir = kb.os.scandir
 
     def scandir(path):
         if Path(path) == tmp_path / "sub":
             raise PermissionError(errno.EACCES, "Permission denied", str(path))
         return original_scandir(path)
 
-    monkeypatch.setattr(kb_lint.os, "scandir", scandir)
-    lint = kb_lint.Lint(tmp_path)
+    monkeypatch.setattr(kb.os, "scandir", scandir)
+    lint = kb.Lint(tmp_path)
     assert lint.run() == 2
     assert len(lint.findings) == 1
     assert lint.findings[0]["file"] == "sub"
@@ -308,7 +316,7 @@ def test_root_inspection_error(tmp_path, monkeypatch):
         raise PermissionError(errno.EACCES, "Permission denied", str(path))
 
     monkeypatch.setattr(Path, "is_dir", is_dir)
-    lint = kb_lint.Lint(tmp_path)
+    lint = kb.Lint(tmp_path)
     assert lint.run() == 2
     assert len(lint.findings) == 1
     assert lint.findings[0]["file"] == "."
@@ -343,7 +351,7 @@ def test_symlink_policy(tmp_path):
     build(external, {"AGENTS.md": "invalid"})
     (tmp_path / "linked-directory").symlink_to(external, target_is_directory=True)
     (tmp_path / ".kb/linked.md").symlink_to(tmp_path / ".kb/alpha.md")
-    lint = kb_lint.Lint(tmp_path)
+    lint = kb.Lint(tmp_path)
     assert lint.run() == 0
     assert len(lint.documents) == len(GOOD) + 1
 
@@ -351,7 +359,7 @@ def test_symlink_policy(tmp_path):
 def test_deterministic_findings(tmp_path):
     files = {"z/.kb/page.md": "invalid", "a/AGENTS.md": "invalid"}
     build(tmp_path, files)
-    lint = kb_lint.Lint(tmp_path)
+    lint = kb.Lint(tmp_path)
     assert lint.run() == 1
     first = lint.findings.copy()
     for name in files:

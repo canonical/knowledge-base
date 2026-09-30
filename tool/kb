@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check knowledge-base structure with the Python standard library.
+"""Help maintain a knowledge base that follows the .kb/agents.md rules.
 
 Exit codes: 0 = clean, 1 = findings, 2 = tool error.
 """
@@ -207,15 +207,7 @@ class Lint:
         return 1 if self.findings else 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--root", type=Path, default=Path("."), help="repository root (default: cwd)"
-    )
-    parser.add_argument(
-        "--json", action="store_true", help="emit {findings, exit} as JSON"
-    )
-    args = parser.parse_args(argv)
+def lint_command(args: argparse.Namespace) -> int:
     lint = Lint(args.root)
     exit_code = lint.run()
     if args.json:
@@ -227,10 +219,27 @@ def main(argv: list[str] | None = None) -> int:
             message = "could not check all knowledge files"
             if not lint.findings:
                 message = "invalid root or no AGENTS.md or .kb/ pages found"
-            print(f"kb_lint: tool error ({message})", file=sys.stderr)
+            print(f"kb lint: tool error ({message})", file=sys.stderr)
         else:
-            print(f"kb_lint: {len(lint.findings)} finding(s)")
+            print(f"kb lint: {len(lint.findings)} finding(s)")
     return exit_code
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="kb", description=__doc__.splitlines()[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    lint_parser = commands.add_parser(
+        "lint", help="check AGENTS.md and .kb/*.md files against the rules"
+    )
+    lint_parser.add_argument(
+        "--root", type=Path, default=Path("."), help="repository root (default: cwd)"
+    )
+    lint_parser.add_argument(
+        "--json", action="store_true", help="emit {findings, exit} as JSON"
+    )
+    lint_parser.set_defaults(run=lint_command)
+    args = parser.parse_args(argv)
+    return args.run(args)
 
 
 if __name__ == "__main__":

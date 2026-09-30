@@ -11,5 +11,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python3 tools/kb_lint.py
-      - run: pip install pytest && python3 -m pytest -q tests/
+      - run: tool/kb lint
+      - run: pip install pytest && python3 -m pytest -q tool/tests/

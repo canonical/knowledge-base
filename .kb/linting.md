@@ -7,7 +7,7 @@ Read the top-level `.kb/agents.md` file before continuing below.
 
 # Overview
 
-Run `python3 tools/kb_lint.py` after editing knowledge files. The checker uses only the Python standard library; run its tests with `python3 -m pytest -q tests/` after installing pytest.
+Run `tool/kb lint` after editing knowledge files. The checker uses only the Python standard library; run its tests with `python3 -m pytest -q tool/tests/` after installing pytest.
 
 Use `--root ../other` to check another repository or `--json` for structured output (`{"findings": [...], "exit": N}`). Text findings use `<file>: [<check>] <message>`. Exit codes are 0 for success, 1 for findings, and 2 for an invalid root or no knowledge files.
 
