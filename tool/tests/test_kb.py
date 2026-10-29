@@ -133,76 +133,19 @@ class LintTest(unittest.TestCase):
                 body = GOOD[path].replace(HS, short)
                 self.assertIn("handshake-line", self.checks({path: body}))
 
-    def test_allowed_headers(self):
-        for path, header in [
-            (".kb/alpha.md", "Index"),
-            (".kb/alpha.md", "Directory"),
-            (".kb/alpha.md", "Headers"),
-            ("AGENTS.md", "Headers"),
-        ]:
-            with self.subTest(path=path, header=header):
-                self.assertIn(
-                    "allowed-headers",
-                    self.checks({path: GOOD[path] + f"\n# {header}\n"}),
-                )
-
-    def test_header_order(self):
-        for path, body in [
-            ("sub/AGENTS.md", GOOD["sub/AGENTS.md"] + "\n# Overview\n"),
-            (".kb/alpha.md", GOOD[".kb/alpha.md"] + "\n# Architecture\n\n# Overview\n"),
-            ("AGENTS.md", GOOD["AGENTS.md"].replace("# Directory", "# Important")
-             + "\n# Directory\n"),
-            (".kb/agents.md", GOOD[".kb/agents.md"] + "\n# Important\n"),
-        ]:
-            with self.subTest(path=path):
-                self.assertEqual(self.checks({path: body}), {"header-order"})
-
-    def test_header_order_message(self):
-        root = build(
-            self.tmp(),
-            GOOD
-            | {
-                ".kb/alpha.md": GOOD[".kb/alpha.md"]
-                + "\n# Architecture\n\n# Overview\n\n# Important\n"
-            },
-        )
-        lint = kb.Lint(root)
-        self.assertEqual(lint.run(), 1)
+    def test_free_form_sections(self):
         self.assertEqual(
-            [(f.line, f.message) for f in lint.findings],
-            [
-                (
-                    9,
-                    "section 'Overview' must come before 'Architecture'; "
-                    "order: Preface, Overview, Important, Architecture",
-                ),
-                (
-                    11,
-                    "section 'Important' must come before 'Architecture'; "
-                    "order: Preface, Overview, Important, Architecture",
-                ),
-            ],
+            self.checks(
+                {
+                    ".kb/alpha.md": GOOD[".kb/alpha.md"]
+                    + "\n# Index\n\n# Architecture\n\n# Overview\n\n# Overview\n"
+                    + "\n# Documents\n\nRelated material.\n",
+                    "AGENTS.md": GOOD["AGENTS.md"].replace("# Directory", "# Headers")
+                    + "\n# Directory\n\n- `sub/` - Nested knowledge files.\n",
+                }
+            ),
+            set(),
         )
-
-    def test_repeated_sections(self):
-        root = build(self.tmp(), GOOD | {"AGENTS.md": GOOD["AGENTS.md"] + "\n# Documents\n"})
-        lint = kb.Lint(root)
-        self.assertEqual(lint.run(), 1)
-        self.assertEqual(
-            [(f.path.name, f.line, f.check, f.message) for f in lint.findings],
-            [
-                (
-                    "AGENTS.md",
-                    17,
-                    "header-order",
-                    "section 'Documents' repeats the one on line 11; merge them",
-                )
-            ],
-        )
-
-    def test_unknown_headers_are_not_ordered(self):
-        body = GOOD[".kb/alpha.md"] + "\n# Index\n\n# Overview\n"
-        self.assertEqual(self.checks({".kb/alpha.md": body}), {"allowed-headers"})
 
     def test_listing_format(self):
         for section in ["Directory", "Documents"]:
@@ -235,17 +178,6 @@ class LintTest(unittest.TestCase):
                 }
             ),
             set(),
-        )
-
-    def test_documents_only_in_agents_files(self):
-        self.assertEqual(
-            self.checks(
-                {
-                    ".kb/alpha.md": GOOD[".kb/alpha.md"]
-                    + "\n# Documents\n\nRelated material.\n"
-                }
-            ),
-            {"allowed-headers"},
         )
 
     def test_text_output(self):
@@ -321,7 +253,6 @@ class LintTest(unittest.TestCase):
                 (".kb/alpha.md", 3, "handshake-line"),
                 ("AGENTS.md", 1, "handshake-line"),
                 ("AGENTS.md", 3, "preface-first"),
-                ("AGENTS.md", 3, "allowed-headers"),
                 ("AGENTS.md", 7, "listing-format"),
             ],
         )
@@ -472,20 +403,12 @@ class LintTest(unittest.TestCase):
         self.assertEqual(lint.findings, first)
 
     def test_heading_variants_are_checked(self):
-        for heading in [" # Index", "   # Index ###", "# Index\t###"]:
+        for heading in [" # Directory", "   # Directory ###", "# Directory\t###"]:
             with self.subTest(heading=heading):
-                self.assertIn(
-                    "allowed-headers",
-                    self.checks({".kb/alpha.md": GOOD[".kb/alpha.md"] + f"\n{heading}\n"}),
+                body = "# Preface\n\n" + HS + f"\n\n{heading}\n\n- bad\n"
+                self.assertEqual(
+                    self.checks({"sub/AGENTS.md": body}), {"listing-format"}
                 )
-
-    def test_valid_heading_variants(self):
-        body = GOOD[".kb/alpha.md"] + "\n   # Overview ###\n\nText.\n"
-        self.assertEqual(self.checks({".kb/alpha.md": body}), set())
-
-    def test_repeated_documents_cannot_hide_later_sections(self):
-        body = GOOD["AGENTS.md"] + "\n# Overview\n\nText.\n\n# Documents\n"
-        self.assertEqual(self.checks({"AGENTS.md": body}), {"header-order"})
 
     def test_fence_closes_before_real_heading(self):
         for opener, closer in [
@@ -494,20 +417,31 @@ class LintTest(unittest.TestCase):
             ("   ```", " ```"),
         ]:
             with self.subTest(opener=opener, closer=closer):
-                body = GOOD[".kb/alpha.md"] + f"\n{opener}\n# Example\n{closer}\n# Index\n"
+                body = (
+                    "# Preface\n\n"
+                    + HS
+                    + f"\n\n{opener}\n# Example\n{closer}\n# Directory\n\n- bad\n"
+                )
                 self.assertEqual(
-                    self.checks({".kb/alpha.md": body}), {"allowed-headers"}
+                    self.checks({"sub/AGENTS.md": body}), {"listing-format"}
                 )
 
     def test_false_fence_closer_keeps_examples_hidden(self):
         for false_closer in ["~~~", "``", "``` text"]:
             with self.subTest(false_closer=false_closer):
-                body = GOOD["AGENTS.md"] + f"\n```\n{false_closer}\n# Example\n```\n"
+                body = (
+                    GOOD["AGENTS.md"]
+                    + f"\n```\n{false_closer}\n- invalid example\n```\n"
+                )
                 self.assertEqual(self.checks({"AGENTS.md": body}), set())
 
     def test_invalid_backtick_opener_does_not_hide_heading(self):
-        body = GOOD[".kb/alpha.md"] + "\n# Overview\n\n```python`invalid\n# Index\n"
-        self.assertEqual(self.checks({".kb/alpha.md": body}), {"allowed-headers"})
+        body = (
+            "# Preface\n\n"
+            + HS
+            + "\n\n# Overview\n\n```python`invalid\n# Directory\n\n- bad\n"
+        )
+        self.assertEqual(self.checks({"sub/AGENTS.md": body}), {"listing-format"})
 
     def test_empty_listing_bullet(self):
         for bullet in ["-", "*", "+", "1.", "2)"]:
