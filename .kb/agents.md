@@ -25,8 +25,8 @@ Every filename must be _globally unique_ inside the repository, so section refer
 
 The following are the ONLY top-level headers allowed in `.kb/*.md` files in this repository. Keep the section order identical to that presented below.
 
-- _Preface_ - A brief introduction outlining the scope and relevance of a specific `*.md` file. This section MUST be at the top of every `.kb/*.md` file so agents can easily grep for it, and the last line of this section MUST be "IMPORTANT: Read the `.kb/agents.md` file." so rules are respected.
-- _Laws_ - Essential directives outlining critical constraints, behaviors, and rules. The Laws are defined in  _terse_ subsections `## §<N> - <Title>` as in this file, internally referenced as §3 and externally as agents.md§3 (this law).
+- _Preface_ - A brief introduction outlining the scope and relevance of a specific `.kb/*.md` file. This section MUST be at the top of every `.kb/*.md` file so agents can easily grep for it, and the last line of this section MUST be "IMPORTANT: Read the `.kb/agents.md` file." so rules are respected.
+- _Laws_ - Essential directives outlining critical constraints, behaviors, and rules. The Laws are defined in _terse_ subsections `## §<N> - <Title>` as in this file, internally referenced as §2 and externally as agents.md§2 (this law).
 - _Concepts_ - Structural design, details, references, etc. This is the only section that accepts open-ended subsections.
 
 Keep two empty lines before top headers, and one empty line before subheaders.
@@ -35,7 +35,7 @@ Keep two empty lines before top headers, and one empty line before subheaders.
 
 - Read the _Knowledge Base_ section inside the `AGENTS.md` file at the top of the repository.
 - Keep the `.kb/*.md` files up-to-date: add or update content whenever something relevant needs documenting. The `.kb/agents.md` must NOT be edited unless explicitly requested.
-- Follow the header conventions in §3. Only the _Preface_ header is required, and the other headers should be omitted if empty or trivial.
+- Follow the header conventions in §2. Only the _Preface_ header is required, and the other headers should be omitted if empty or trivial.
 - If you find incorrect organization that breaks any of the laws in this document, fix it.
 - Never change the subject of a Law - if obsolete, replace its header with `## §<N> - Revoked`.
 
@@ -51,6 +51,7 @@ IMPORTANT: Read the `.kb/agents.md` file.
 - [.kb/filename.md](.kb/filename.md) - Terse summary.
 - [subdir/.kb/filename.md](subdir/.kb/filename.md) - Another terse summary.
 ```
+
 
 # Concepts
 
